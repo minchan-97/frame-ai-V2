@@ -128,9 +128,16 @@ with st.sidebar:
     # pkl 로드
     st.markdown("---")
     st.markdown("### 💾 저장된 인덱스")
-    pkl_up = st.file_uploader("인덱스 (.pkl)", type=["pkl"], key="pkl_up")
+    pkl_up = st.file_uploader(
+        "인덱스 (.pkl) — 모바일: 파일앱에서 선택",
+        type=None,
+        key="pkl_up",
+        help="PC: .pkl 직접 선택 / 모바일: 파일 앱에서 .pkl 선택")
     if pkl_up:
-        st.session_state.pkl_bytes = pkl_up.read()
+        if pkl_up.name.endswith('.pkl'):
+            st.session_state.pkl_bytes = pkl_up.read()
+        else:
+            st.warning("⚠️ .pkl 파일만 지원해요.")
 
     if st.session_state.pkl_bytes and not st.session_state.initialized:
         if st.button("📂 불러오기", use_container_width=True):
@@ -549,4 +556,3 @@ with tab5:
                 st.caption(r.answer[:200])
                 if r.xai:
                     st.caption(r.xai.explanation)
-
