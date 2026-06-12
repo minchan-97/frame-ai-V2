@@ -497,9 +497,9 @@ class GasCoreFramework:
                 "std":   getattr(self.nm,"std",1.0),
             }
         # CoreAI v2 저장 (dict로)
-        v2 = getattr(self, 'coreai_v2', None)
-        if v2 and getattr(v2, 'is_trained', False):
-            try:
+        try:
+            v2 = getattr(self, 'coreai_v2', None)
+            if v2 is not None and getattr(v2, 'is_trained', False) is True:
                 data["coreai_v2"] = {
                     "n_clusters":        v2.n_clusters,
                     "global_vocab":      v2.global_vocab,
@@ -521,8 +521,8 @@ class GasCoreFramework:
                         for k,m in v2.markovs.items()
                     },
                 }
-            except Exception:
-                pass  # v2 저장 실패해도 나머지는 정상 저장
+        except Exception:
+            pass
         return data
 
     @classmethod
