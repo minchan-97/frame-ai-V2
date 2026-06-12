@@ -549,4 +549,3 @@ with tab5:
                 st.caption(r.answer[:200])
                 if r.xai:
                     st.caption(r.xai.explanation)
-
