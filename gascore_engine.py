@@ -478,52 +478,64 @@ class GasCoreFramework:
 
     # ── 저장/로드 ─────────────────────────────────────────────
     def to_dict(self) -> dict:
-        data = {
-            "corpus_text":    self.corpus_text,
-            "guideline_hint": self.guideline_hint,
-            "cycle":          self.cycle,
-            "is_initialized": self.is_initialized,
-        }
-        if self.evolving:
-            data["evolving"] = self.evolving.to_dict()
-        if self.nm and self.nm.is_trained:
-            data["nm"] = {
-                "uni":   dict(self.nm.uni),
-                "bi":    {k:dict(v) for k,v in self.nm.bi.items()},
-                "tri":   {k:dict(v) for k,v in self.nm.tri.items()},
-                "total": self.nm.total,
-                "alpha": getattr(self.nm,"alpha",0.001),
-                "mu":    getattr(self.nm,"mu",0.0),
-                "std":   getattr(self.nm,"std",1.0),
-            }
-        # CoreAI v2 저장 (dict로)
         try:
-            v2 = getattr(self, 'coreai_v2', None)
-            if v2 is not None and getattr(v2, 'is_trained', False) is True:
-                data["coreai_v2"] = {
-                    "n_clusters":        v2.n_clusters,
-                    "global_vocab":      v2.global_vocab,
-                    "corpus_name":       getattr(v2,'corpus_name',''),
-                    "train_stats":       getattr(v2,'train_stats',{}),
-                    "emb_emb":           v2.embedder.emb if v2.embedder else None,
-                    "emb_vocab":         v2.embedder.vocab if v2.embedder else None,
-                    "emb_dim":           v2.embedder.dim if v2.embedder else 32,
-                    "cluster_sentences": dict(v2.decomposer.cluster_sentences),
-                    "cluster_tokens":    dict(v2.decomposer.cluster_tokens),
-                    "cluster_keywords":  v2.decomposer.cluster_keywords,
-                    "decomp_vocab":      v2.decomposer.vocab,
-                    "decomp_W":          v2.decomposer.W,
-                    "markovs": {
-                        k: {"uni":dict(m.uni),
-                            "bi": {k2:dict(vv) for k2,vv in m.bi.items()},
-                            "tri":{k2:dict(vv) for k2,vv in m.tri.items()},
-                            "total":m.total}
-                        for k,m in v2.markovs.items()
-                    },
-                }
+            data = {
+                "corpus_text":    getattr(self,'corpus_text',''),
+                "guideline_hint": getattr(self,'guideline_hint',''),
+                "cycle":          getattr(self,'cycle',0),
+                "is_initialized": getattr(self,'is_initialized',False),
+            }
+            ev = getattr(self,'evolving',None)
+            if ev:
+                try: data["evolving"] = ev.to_dict()
+                except Exception: pass
+            nm = getattr(self,'nm',None)
+            if nm and getattr(nm,'is_trained',False):
+                try:
+                    data["nm"] = {
+                        "uni":   dict(nm.uni),
+                        "bi":    {k:dict(v) for k,v in nm.bi.items()},
+                        "tri":   {k:dict(v) for k,v in nm.tri.items()},
+                        "total": nm.total,
+                        "alpha": getattr(nm,"alpha",0.001),
+                        "mu":    getattr(nm,"mu",0.0),
+                        "std":   getattr(nm,"std",1.0),
+                    }
+                except Exception: pass
+            # CoreAI v2
+            try:
+                v2 = getattr(self,'coreai_v2',None)
+                if v2 is not None and getattr(v2,'is_trained',False) is True:
+                    data["coreai_v2"] = {
+                        "n_clusters":        v2.n_clusters,
+                        "global_vocab":      v2.global_vocab,
+                        "corpus_name":       getattr(v2,'corpus_name',''),
+                        "train_stats":       getattr(v2,'train_stats',{}),
+                        "emb_emb":           v2.embedder.emb if v2.embedder else None,
+                        "emb_vocab":         v2.embedder.vocab if v2.embedder else None,
+                        "emb_dim":           v2.embedder.dim if v2.embedder else 32,
+                        "cluster_sentences": dict(v2.decomposer.cluster_sentences),
+                        "cluster_tokens":    dict(v2.decomposer.cluster_tokens),
+                        "cluster_keywords":  v2.decomposer.cluster_keywords,
+                        "decomp_vocab":      v2.decomposer.vocab,
+                        "decomp_W":          v2.decomposer.W,
+                        "markovs": {
+                            k: {"uni":dict(m.uni),
+                                "bi": {k2:dict(vv) for k2,vv in m.bi.items()},
+                                "tri":{k2:dict(vv) for k2,vv in m.tri.items()},
+                                "total":m.total}
+                            for k,m in v2.markovs.items()
+                        },
+                    }
+            except Exception: pass
+            return data
         except Exception:
-            pass
-        return data
+            return {
+                "corpus_text":    getattr(self,'corpus_text',''),
+                "guideline_hint": getattr(self,'guideline_hint',''),
+                "cycle":          getattr(self,'cycle',0),
+                "is_initialized": getattr(self,'is_initialized',False),
+            }
 
     @classmethod
     def from_dict(cls, data: dict) -> "GasCoreFramework":
