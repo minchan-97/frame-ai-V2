@@ -57,7 +57,7 @@ def tokenize(text: str) -> list:
 def clean_corpus(corpus_text: str) -> str:
     """
     코퍼스 정제
-    - URL, 숫자만 있는 줄, 특수문자 덩어리 제거
+    - URL, 숫자뭉침, 특수문자 덩어리 제거
     - 의미 있는 한국어/영어 문장만 남김
     """
     import re
@@ -68,15 +68,36 @@ def clean_corpus(corpus_text: str) -> str:
         s = line.strip()
         if not s or len(s) < 6:
             continue
+        # URL 제거
         if re.search(r'https?://', s):
             continue
+        # 000000 같은 연속 숫자 패턴
+        if re.search(r'0{4,}|9{4,}|\d{6,}', s):
+            continue
+        # ￭ 특수 구분자 포함
+        if '￭' in s or '◆' in s or '◇' in s:
+            continue
+        # 숫자+한글 뭉침 (날짜표 등): 10자 이상 숫자한글혼합
+        if re.search(r'\d{3,}[가-힣]{1,3}\d{3,}', s):
+            continue
+        # 한국어/영어 비율 40% 미만 제거 (강화)
         korean_en = len(re.findall(r'[가-힣a-zA-Z]', s))
-        if len(s) > 0 and korean_en / len(s.replace(' ','')) < 0.3:
+        total = len(s.replace(' ',''))
+        if total > 0 and korean_en / total < 0.4:
             continue
-        if re.match(r'^[\d\s]{10,}', s):
+        # 목차 숫자 패턴
+        if re.match(r'^[\d\s]{8,}', s):
             continue
+        # 한자/특수기호만
         if re.match(r'^[Ⅰ-Ⅹ①-⑳\s]+$', s):
             continue
+        # 단어 평균 길이가 너무 긴 경우 (PDF 뭉침)
+        words = s.split()
+        if words:
+            avg_len = sum(len(w) for w in words) / len(words)
+            if avg_len > 15:  # 평균 단어 15자 초과 → 뭉침
+                continue
+        # 중복 제거
         key = re.sub(r'\s+', '', s)[:40]
         if key in seen:
             continue
