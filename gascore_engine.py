@@ -497,29 +497,32 @@ class GasCoreFramework:
                 "std":   getattr(self.nm,"std",1.0),
             }
         # CoreAI v2 저장 (dict로)
-        if self.coreai_v2 and self.coreai_v2.is_trained:
-            v2 = self.coreai_v2
-            data["coreai_v2"] = {
-                "n_clusters":        v2.n_clusters,
-                "global_vocab":      v2.global_vocab,
-                "corpus_name":       v2.corpus_name,
-                "train_stats":       v2.train_stats,
-                "emb_emb":           v2.embedder.emb if v2.embedder else None,
-                "emb_vocab":         v2.embedder.vocab if v2.embedder else None,
-                "emb_dim":           v2.embedder.dim if v2.embedder else 32,
-                "cluster_sentences": dict(v2.decomposer.cluster_sentences),
-                "cluster_tokens":    dict(v2.decomposer.cluster_tokens),
-                "cluster_keywords":  v2.decomposer.cluster_keywords,
-                "decomp_vocab":      v2.decomposer.vocab,
-                "decomp_W":          v2.decomposer.W,
-                "markovs": {
-                    k: {"uni":dict(m.uni),
-                        "bi": {k2:dict(v) for k2,v in m.bi.items()},
-                        "tri":{k2:dict(v) for k2,v in m.tri.items()},
-                        "total":m.total}
-                    for k,m in v2.markovs.items()
-                },
-            }
+        v2 = getattr(self, 'coreai_v2', None)
+        if v2 and getattr(v2, 'is_trained', False):
+            try:
+                data["coreai_v2"] = {
+                    "n_clusters":        v2.n_clusters,
+                    "global_vocab":      v2.global_vocab,
+                    "corpus_name":       getattr(v2,'corpus_name',''),
+                    "train_stats":       getattr(v2,'train_stats',{}),
+                    "emb_emb":           v2.embedder.emb if v2.embedder else None,
+                    "emb_vocab":         v2.embedder.vocab if v2.embedder else None,
+                    "emb_dim":           v2.embedder.dim if v2.embedder else 32,
+                    "cluster_sentences": dict(v2.decomposer.cluster_sentences),
+                    "cluster_tokens":    dict(v2.decomposer.cluster_tokens),
+                    "cluster_keywords":  v2.decomposer.cluster_keywords,
+                    "decomp_vocab":      v2.decomposer.vocab,
+                    "decomp_W":          v2.decomposer.W,
+                    "markovs": {
+                        k: {"uni":dict(m.uni),
+                            "bi": {k2:dict(vv) for k2,vv in m.bi.items()},
+                            "tri":{k2:dict(vv) for k2,vv in m.tri.items()},
+                            "total":m.total}
+                        for k,m in v2.markovs.items()
+                    },
+                }
+            except Exception:
+                pass  # v2 저장 실패해도 나머지는 정상 저장
         return data
 
     @classmethod
@@ -553,7 +556,10 @@ class GasCoreFramework:
 
         # CoreAI v2 복원
         if "coreai_v2" in data and V2_OK:
-            fw.coreai_v2 = CoreAIv2Engine.load_from_dict(data["coreai_v2"])
+            try:
+                fw.coreai_v2 = CoreAIv2Engine.load_from_dict(data["coreai_v2"])
+            except Exception:
+                fw.coreai_v2 = None
 
         # XAI + CoreAI 레이어
         fw._rebuild_layers()
