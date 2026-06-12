@@ -402,4 +402,3 @@ class EvolvingIndexEngine:
             "진화 세대": self.generation,
             "빈 자리": len(self.som.get_empty()) if self.som else 0,
         }
-
