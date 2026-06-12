@@ -478,19 +478,24 @@ class GasCoreFramework:
                        epochs: int = 5):
         """
         한 순환 완료:
-        승인된 생성 문장들로 NeuralMarkov 재학습 → 다음 순환
+        원본 코퍼스 + 승인된 생성 문장들로 NeuralMarkov 재학습
         """
+        # 원본 코퍼스 + 새 문장 합치기
+        parts = []
+        if self.corpus_text:
+            parts.append(self.corpus_text)
         if self.evolving and self.evolving.generated:
-            new_sents  = [g["sentence"] for g in self.evolving.generated]
-            new_corpus = "\n".join(new_sents)
-            if self.nm and new_corpus.strip():
-                self.nm.train(new_corpus, embedding_dim=32, epochs=epochs)
+            new_sents = [g["sentence"] for g in self.evolving.generated]
+            parts.append("\n".join(new_sents))
         if new_corpus_texts:
-            for text in new_corpus_texts:
-                if self.nm:
-                    self.nm.train(text, embedding_dim=32, epochs=epochs)
+            parts.extend(new_corpus_texts)
 
-        # 재학습 후 전체 코퍼스로 재캘리브레이션
+        combined = "\n".join(p for p in parts if p.strip())
+
+        if self.nm and combined.strip():
+            self.nm.train(combined, embedding_dim=32, epochs=epochs)
+
+        # 캘리브레이션
         if self.nm and self.corpus_text:
             self.nm._calibrate(self.corpus_text)
 
