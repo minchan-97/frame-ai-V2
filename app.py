@@ -563,7 +563,9 @@ with tab1:
                 from openai import OpenAI
                 client = OpenAI(api_key=st.session_state.api_key)
                 msgs = []
-                hint = get_fw().guideline_hint
+                fw_ref = get_fw()
+                # corpus_text 전체 사용 (guideline_hint는 앞 1000자만)
+                hint = getattr(fw_ref, "corpus_text", "") or getattr(fw_ref, "guideline_hint", "")
                 sys_text = (
                     "당신은 교육 전문 AI 어시스턴트입니다." + chr(10) + chr(10) +
                     "[절대 규칙]" + chr(10) +
@@ -572,7 +574,7 @@ with tab1:
                     "3. 문서 없는 내용은 교육학 지식으로 보완하되 모순 금지." + chr(10) +
                     "4. 수업활동, 방법, 예시를 구체적이고 상세하게 작성하세요." + chr(10) +
                     "5. 답변은 충분히 상세하게 작성하세요." + chr(10) + chr(10) +
-                    "[참고 문서]" + chr(10) + (hint[:2500] if hint else "")
+                    "[참고 문서]" + chr(10) + (hint[:8000] if hint else "")
                 )
                 msgs.append({"role":"system","content": sys_text})
                 msgs.append({"role":"user","content":prompt})
