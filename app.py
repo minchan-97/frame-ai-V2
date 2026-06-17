@@ -526,15 +526,25 @@ with tab1:
                 hint = get_fw().guideline_hint
                 if hint:
                     msgs.append({"role":"system","content":
-                        f"아래 문서를 참고하여 답하세요. 문서에 없는 내용은 모른다고 하세요.\n\n{hint[:1200]}"})
+                        f"""당신은 전문적인 AI 어시스턴트입니다.
+아래 문서를 주요 참고자료로 활용하되, 일반 지식으로도 충분히 보완하여 답하세요.
+답변은 구체적이고 실용적으로, 충분히 상세하게 작성하세요.
+
+[참고 문서]
+{hint[:2000]}
+
+답변 시 주의사항:
+- 문서 내용을 바탕으로 하되 창의적으로 확장하세요
+- 구체적인 활동, 방법, 예시를 포함하세요
+- 충분한 길이로 상세하게 답변하세요"""})
                 msgs.append({"role":"user","content":prompt})
                 resp = client.chat.completions.create(
                     model=st.session_state.model,
                     messages=msgs,
-                    max_tokens=600)
+                    max_tokens=1500)
                 return resp.choices[0].message.content.strip()
 
-            with st.spinner("문서를 확인하며 답변하는 중이에요..."):
+            with st.spinner("문서를 참고하여 답변 중이에요..."):
                 try:
                     result = fw.run_guardrail(
                         question=q.strip(),
