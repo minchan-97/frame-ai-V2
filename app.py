@@ -479,27 +479,38 @@ with tab1:
         st.info("사이드바에서 문서를 먼저 학습해주세요.")
     else:
         # 대화 이력 표시
-        for item in st.session_state.qa_history[-10:]:
+        for item in st.session_state.qa_history[-8:]:
             r    = item["result"]
             icon = {"PASS":"🟢","WARNING":"🟡","FATAL":"🔴"}.get(r.status,"⬜")
             label = {"PASS":"문서 내 정보","WARNING":"일부 확인 필요","FATAL":"문서 범위 초과"}.get(r.status,"")
+            v_color = {"PASS":"#4ade80","WARNING":"#fbbf24","FATAL":"#f87171"}.get(r.status,"#7986a8")
 
+            # 질문
             st.markdown(
                 f'<div class="chat-user"><span>{item["question"]}</span></div>',
                 unsafe_allow_html=True)
-            st.markdown(
-                f'<div class="chat-ai">'
-                f'<span>{r.answer}</span>'
-                f'<div class="chat-meta">{icon} {label} · {r.attempts}회 시도 · {r.total_ms:.0f}ms</div>'
-                f'</div>',
-                unsafe_allow_html=True)
 
-            # XAI 인라인 표시
+            # 답변 — 카드형으로 전체 표시
+            st.markdown(f"""
+<div style="background:#1a1d27;border:1px solid {v_color}40;border-left:3px solid {v_color};
+            border-radius:0 12px 12px 12px;padding:1rem 1.2rem;margin:4px 0 4px 0;">
+    <div style="white-space:pre-wrap;line-height:1.7;font-size:0.92rem;color:#e8eaf6;">
+{r.answer}
+    </div>
+    <div style="margin-top:0.6rem;font-size:0.68rem;color:#7986a8;border-top:1px solid #2a2f45;padding-top:0.4rem;">
+        {icon} {label} · {r.attempts}회 검증 · {r.total_ms:.0f}ms
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+            # XAI 경고 (문서 밖 단어 있을 때만)
             if r.xai and r.xai.outlier_tokens:
                 st.markdown(
-                    f'<div style="margin:-8px 0 12px 0;font-size:0.72rem;color:#f87171;">'
+                    f'<div style="margin:2px 0 12px 0;font-size:0.72rem;color:#f87171;padding-left:4px;">'
                     f'⚠️ 문서 밖 단어 감지: {", ".join(r.xai.outlier_tokens)}</div>',
                     unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
 
         # 입력
         q = st.text_area(
