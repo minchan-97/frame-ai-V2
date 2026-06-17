@@ -325,9 +325,21 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
+        # 대화 기록 간략화 (질문 + 판정 + 답변 앞 200자)
+        qa_slim = [
+            {
+                "question": item["question"],
+                "status":   item["result"].status,
+                "answer":   item["result"].answer[:200],
+                "ms":       item["result"].total_ms,
+            }
+            for item in st.session_state.qa_history[:50]
+        ]
+        save_data = {**fw.to_dict(), "qa_history": qa_slim}
+
         st.download_button(
             "💾 학습 저장",
-            data=pickle.dumps(fw.to_dict()),
+            data=pickle.dumps(save_data),
             file_name=f"gascore_c{fw.cycle}.pkl",
             mime="application/octet-stream",
             use_container_width=True,
@@ -537,17 +549,17 @@ with tab1:
                 hint = get_fw().guideline_hint
                 if hint:
                     msgs.append({"role":"system","content":
-                        f"""당신은 전문적인 AI 어시스턴트입니다.
-아래 문서를 주요 참고자료로 활용하되, 일반 지식으로도 충분히 보완하여 답하세요.
-답변은 구체적이고 실용적으로, 충분히 상세하게 작성하세요.
+                        f"""당신은 교육 전문 AI 어시스턴트입니다.
+
+[절대 규칙]
+1. 사용자가 학년/학기/단원을 언급하면 반드시 그대로 사용하세요. 임의로 바꾸지 마세요.
+2. 아래 문서 내용을 최우선으로 참고하세요.
+3. 문서에 없는 내용은 일반 교육학 지식으로 보완하되, 문서 내용과 모순되면 안 됩니다.
+4. 수업활동, 방법, 예시를 구체적이고 상세하게 작성하세요.
+5. 답변 길이는 충분히 상세하게 작성하세요.
 
 [참고 문서]
-{hint[:2000]}
-
-답변 시 주의사항:
-- 문서 내용을 바탕으로 하되 창의적으로 확장하세요
-- 구체적인 활동, 방법, 예시를 포함하세요
-- 충분한 길이로 상세하게 답변하세요"""})
+{hint[:2500]}""})
                 msgs.append({"role":"user","content":prompt})
                 resp = client.chat.completions.create(
                     model=st.session_state.model,
