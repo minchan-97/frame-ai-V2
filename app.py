@@ -460,46 +460,54 @@ st.markdown(f"""
 # ── 탭 ──────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
     "💬 내 문서와 대화하기",
-    "✨ 수업활동 만들기",
-    "✅ 답변 검증하기",
+    "🧬 AI 발전시키기",
+    "🔍 텍스트 직접 검증",
     "🔄 학습 진행하기",
 ])
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 탭 1: 오프라인 QA (코퍼스 검색 기반)
+# 탭 1: LLM + 가드레일 + XAI (메인 대화)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tab1:
-    st.markdown("##### 내 문서 안의 내용으로 대답해요")
-    st.caption("GPT 없이, 내 문서만 사용 — 문서 밖의 내용은 대답하지 않아요")
+    st.markdown("##### 내 문서 기반으로 GPT가 답해요")
+    st.caption("문서 밖으로 나간 답변은 자동으로 다시 생성 · XAI로 이유 설명")
 
-    if not fw.is_initialized:
-        st.info("문서를 먼저 학습해주세요.")
+    if not st.session_state.api_key:
+        st.warning("💡 사이드바에서 OpenAI API Key를 입력해주세요.")
+    elif not fw.is_initialized:
+        st.info("사이드바에서 문서를 먼저 학습해주세요.")
     else:
-        # 대화 표시
-        for item in st.session_state.qa_offline[-12:]:
-            icon_map = {"PASS":"🟢","WARNING":"🟡","FATAL":"🔴","SKIP":"⬜"}
-            icon = icon_map.get(item["status"], "⬜")
-            label_map = {"PASS":"문서 내 정보","WARNING":"일부 불확실","FATAL":"문서 범위 초과","SKIP":"짧은 답변"}
-            label = label_map.get(item["status"], "")
+        # 대화 이력 표시
+        for item in st.session_state.qa_history[-10:]:
+            r    = item["result"]
+            icon = {"PASS":"🟢","WARNING":"🟡","FATAL":"🔴"}.get(r.status,"⬜")
+            label = {"PASS":"문서 내 정보","WARNING":"일부 확인 필요","FATAL":"문서 범위 초과"}.get(r.status,"")
 
-            st.markdown(f'<div class="chat-user"><span>{item["q"]}</span></div>',
-                        unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="chat-user"><span>{item["question"]}</span></div>',
+                unsafe_allow_html=True)
             st.markdown(
                 f'<div class="chat-ai">'
-                f'<span>{item["a"]}</span>'
-                f'<div class="chat-meta">'
-                f'{icon} {label} | {item["ms"]:.0f}ms | 연관도 {item["score"]:.2f}'
-                f'</div></div>',
+                f'<span>{r.answer}</span>'
+                f'<div class="chat-meta">{icon} {label} · {r.attempts}회 시도 · {r.total_ms:.0f}ms</div>'
+                f'</div>',
                 unsafe_allow_html=True)
 
-        # 입력 영역
+            # XAI 인라인 표시
+            if r.xai and r.xai.outlier_tokens:
+                st.markdown(
+                    f'<div style="margin:-8px 0 12px 0;font-size:0.72rem;color:#f87171;">'
+                    f'⚠️ 문서 밖 단어 감지: {", ".join(r.xai.outlier_tokens)}</div>',
+                    unsafe_allow_html=True)
+
+        # 입력
         q = st.text_area(
             "질문",
             height=70,
             placeholder="예: 이 교육계획서에서 안전교육 시수는 몇 시간인가요?",
             label_visibility="collapsed",
-            key="qa_input"
+            key="qa_main_input"
         )
         c_send, c_clear = st.columns([5, 1])
         with c_send:
@@ -507,52 +515,64 @@ with tab1:
                              disabled=not q.strip(), type="primary")
         with c_clear:
             if st.button("🗑️", help="대화 기록 지우기"):
-                st.session_state.qa_offline = []
+                st.session_state.qa_history = []
                 st.rerun()
 
         if send and q.strip():
-            if fw.searcher is None or not fw.searcher.sentences:
-                fw.searcher = None
-                if hasattr(fw, 'corpus_text'):
-                    from gascore_engine import CorpusSearcher
-                    fw.searcher = CorpusSearcher()
-                    fw.searcher.build(fw.corpus_text)
+            def llm_fn_main(prompt):
+                from openai import OpenAI
+                client = OpenAI(api_key=st.session_state.api_key)
+                msgs = []
+                hint = get_fw().guideline_hint
+                if hint:
+                    msgs.append({"role":"system","content":
+                        f"아래 문서를 참고하여 답하세요. 문서에 없는 내용은 모른다고 하세요.\n\n{hint[:1200]}"})
+                msgs.append({"role":"user","content":prompt})
+                resp = client.chat.completions.create(
+                    model=st.session_state.model,
+                    messages=msgs,
+                    max_tokens=600)
+                return resp.choices[0].message.content.strip()
 
-            if fw.searcher and fw.searcher.sentences:
-                result = fw.searcher.answer(
-                    q.strip(),
-                    nm=fw.nm if fw.nm and fw.nm.is_trained else None,
-                    topk=5,
-                )
-                st.session_state.qa_offline.append({
-                    "q":      q.strip(),
-                    "a":      result["answer"],
-                    "status": result["status"],
-                    "score":  result["score"],
-                    "ms":     result["ms"],
-                })
-                set_fw(fw)
-                st.rerun()
-            else:
-                st.warning("문서를 먼저 학습해주세요.")
+            with st.spinner("문서를 확인하며 답변하는 중이에요..."):
+                try:
+                    result = fw.run_guardrail(
+                        question=q.strip(),
+                        llm_fn=llm_fn_main,
+                        max_attempts=st.session_state.max_retry,
+                        logp_thr=st.session_state.logp_thr,
+                    )
+                    st.session_state.qa_history.insert(0, {
+                        "question": q.strip(),
+                        "result":   result,
+                    })
+                    set_fw(fw)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"오류: {e}")
+                    import traceback; st.code(traceback.format_exc())
 
-        # 연관 문장
-        if st.session_state.qa_offline and fw.searcher:
-            with st.expander("📌 관련 문서 내용 보기"):
-                last_q = st.session_state.qa_offline[-1]["q"]
-                for sent, score in fw.searcher.search(last_q, topk=5):
-                    r = fw.nm.evaluate(sent) if fw.nm and fw.nm.is_trained \
-                        else {"status":"SKIP"}
-                    icon = {"PASS":"🟢","WARNING":"🟡","FATAL":"🔴","SKIP":"⬜"}.get(
-                        r["status"],"⬜")
-                    st.caption(f"{icon} [{score:.3f}] {sent}")
+        # XAI 상세 (마지막 답변)
+        if st.session_state.qa_history:
+            last = st.session_state.qa_history[0]
+            if last["result"].xai:
+                with st.expander("🔍 마지막 답변 XAI 분석"):
+                    xai = last["result"].xai
+                    st.caption(xai.explanation)
+                    if xai.token_scores:
+                        html = ""
+                        for tok, lp, _ in xai.token_scores:
+                            cls = "tok-ok" if lp >= -10 else "tok-w" if lp >= -14 else "tok-bad"
+                            html += f'<span class="{cls}">{tok}</span> '
+                        st.markdown(html, unsafe_allow_html=True)
+                        st.caption("🟢 문서 내 단어  🟡 경계  🔴 문서 밖 단어")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 탭 2: 진화 인덱스 (수업활동 만들기)
+# 탭 2: AI 발전시키기 (진화 인덱스)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tab2:
-    st.markdown("##### AI가 수업활동 아이디어를 제안해요")
+    st.markdown("##### AI가 아이디어를 제안해요 — 승인할수록 AI가 나를 닮아가요")
     st.caption("승인하면 AI가 학습 — 거부하면 AI가 수정 — 쓸수록 내 스타일로")
 
     if not st.session_state.api_key:
@@ -668,103 +688,64 @@ with tab2:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 탭 3: 가드레일 (답변 검증)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 탭 3: 텍스트 직접 검증 (XAI)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tab3:
-    st.markdown("##### GPT 답변이 내 문서 범위 안인지 확인해요")
-    st.caption("문서 밖으로 나간 답변은 자동으로 다시 생성 — XAI로 이유 설명")
+    st.markdown("##### 텍스트가 내 문서 범위 안인지 바로 확인해요")
+    st.caption("어떤 텍스트든 붙여넣으면 XAI가 어느 단어가 문제인지 설명해줘요")
 
-    if not st.session_state.api_key:
-        st.warning("💡 사이드바에서 API Key를 입력해주세요.")
+    if not fw.is_initialized:
+        st.info("사이드바에서 문서를 먼저 학습해주세요.")
     else:
-        question = st.text_area(
-            "질문",
-            placeholder="예: 2학년 1학기 국어 수업 활동을 창의적으로 만들어줘",
-            height=80,
+        xai_text = st.text_area(
+            "확인할 텍스트",
+            height=120,
+            placeholder="예: 안전 교육은 연간 5시간 실시한다 (숫자 오류 테스트)\n예: 학교폭력 예방 교육은 학기별로 실시한다 (정상 테스트)",
             label_visibility="collapsed",
-            key="l2_q"
+            key="l3_text"
         )
-        run = st.button("▶ 검증하며 답변 받기",
-                        use_container_width=True,
-                        disabled=not question.strip(),
-                        type="primary")
+        run_xai = st.button("🔍 검증하기", use_container_width=True,
+                             disabled=not xai_text.strip(), type="primary")
 
-        if run and question.strip():
-            def llm_fn(prompt):
-                from openai import OpenAI
-                client = OpenAI(api_key=st.session_state.api_key)
-                msgs   = []
-                hint   = get_fw().guideline_hint
-                if hint:
-                    msgs.append({"role":"system","content":
-                        f"가이드라인을 참고하여 답하세요.\n\n{hint[:800]}"})
-                msgs.append({"role":"user","content":prompt})
-                resp = client.chat.completions.create(
-                    model=st.session_state.model,
-                    messages=msgs,
-                    max_tokens=500)
-                return resp.choices[0].message.content.strip()
-
-            with st.spinner("답변을 검증하는 중이에요..."):
-                try:
-                    result = fw.run_guardrail(
-                        question=question,
-                        llm_fn=llm_fn,
-                        max_attempts=st.session_state.max_retry,
-                        logp_thr=st.session_state.logp_thr,
-                    )
-                    st.session_state.qa_history.insert(0, {
-                        "question": question, "result": result})
-                    set_fw(fw)
-
-                    v = result.status
+        if run_xai and xai_text.strip():
+            try:
+                xai = fw.explain(xai_text.strip(),
+                                 logp_thr=st.session_state.logp_thr)
+                if xai:
+                    v = xai.verdict
                     v_color = {"PASS":"#4ade80","WARNING":"#fbbf24","FATAL":"#f87171"}.get(v,"#7986a8")
                     v_label = {
-                        "PASS":  "✅ 문서 내 정보예요",
-                        "WARNING": "⚠️ 일부 내용을 확인해보세요",
-                        "FATAL": "❌ 문서 범위를 벗어났어요"
+                        "PASS":    "✅ 문서 범위 안이에요",
+                        "WARNING": "⚠️ 일부 단어를 확인해보세요",
+                        "FATAL":   "❌ 문서 범위를 벗어났어요"
                     }.get(v, v)
 
-                    st.markdown(f"""
-<div class="gc-card" style="border-color:{v_color};">
-    <div style="color:{v_color};font-weight:700;font-size:1rem;margin-bottom:0.5rem;">
-        {v_label}
-    </div>
-    <div style="font-size:0.72rem;color:#7986a8;">
-        {result.attempts}번 시도 · {result.total_ms:.0f}ms
-    </div>
-</div>
-""", unsafe_allow_html=True)
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("판정", v_label)
+                    c2.metric("처리 시간", f"{xai.ms:.1f}ms")
+                    c3.metric("평균 점수", f"{xai.avg_logp:+.2f}")
 
-                    st.markdown("**답변**")
-                    st.info(result.answer)
+                    st.markdown("---")
+                    st.markdown("**단어별 분석**")
+                    if xai.token_scores:
+                        html = ""
+                        for tok, lp, _ in xai.token_scores:
+                            cls = "tok-ok" if lp >= -10 else "tok-w" if lp >= -14 else "tok-bad"
+                            html += f'<span class="{cls}">{tok}</span> '
+                        st.markdown(html, unsafe_allow_html=True)
+                        st.caption("🟢 문서 내 단어  🟡 경계 단어  🔴 문서 밖 단어")
 
-                    if result.xai:
-                        with st.expander("🔍 왜 이 판정인지 보기 (XAI)"):
-                            st.caption(result.xai.explanation)
-                            if result.xai.token_scores:
-                                html = ""
-                                for tok, lp, _ in result.xai.token_scores:
-                                    cls = "tok-ok" if lp >= -10 else "tok-w" if lp >= -14 else "tok-bad"
-                                    html += f'<span class="{cls}">{tok}</span> '
-                                st.markdown(html, unsafe_allow_html=True)
-                                st.caption("🟢 문서 내 단어  🟡 경계  🔴 문서 밖 단어")
-                            if result.xai.outlier_tokens:
-                                st.error(f"문서 밖 단어: {', '.join(result.xai.outlier_tokens)}")
+                    st.markdown("---")
+                    st.info(f"📋 {xai.explanation}")
 
-                except Exception as e:
-                    st.error(f"오류: {e}")
-                    import traceback; st.code(traceback.format_exc())
-
-        # 이력
-        if st.session_state.qa_history:
-            st.markdown("---")
-            st.markdown("**최근 검증 이력**")
-            for item in st.session_state.qa_history[:5]:
-                r    = item["result"]
-                icon = {"PASS":"✅","WARNING":"⚠️","FATAL":"❌"}.get(r.status,"⬜")
-                with st.expander(f"{icon} {item['question'][:50]}"):
-                    st.caption(r.answer[:200])
-                    if r.xai:
-                        st.caption(f"📋 {r.xai.explanation}")
+                    if xai.outlier_tokens:
+                        st.error(f"문서 밖 단어: {', '.join(xai.outlier_tokens)}")
+                    if xai.cluster_hint:
+                        st.caption(f"💡 관련 문서 개념: {xai.cluster_hint}")
+            except Exception as e:
+                st.error(f"오류: {e}")
+                import traceback; st.code(traceback.format_exc())
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
