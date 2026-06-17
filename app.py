@@ -290,7 +290,24 @@ with st.sidebar:
                     set_fw(fw)
                     st.session_state.initialized = True
                     st.session_state.qa_offline  = []
-                    st.session_state.qa_history  = []
+                    # 대화 기록 복원 (저장된 경우)
+                    saved_qa = data.get("qa_history", [])
+                    if saved_qa:
+                        # 간략화된 형식을 result 객체처럼 래핑
+                        from types import SimpleNamespace
+                        restored = []
+                        for item in saved_qa:
+                            r = SimpleNamespace(
+                                status=item["status"],
+                                answer=item["answer"],
+                                attempts=1,
+                                total_ms=item.get("ms",0),
+                                xai=None,
+                            )
+                            restored.append({"question":item["question"],"result":r})
+                        st.session_state.qa_history = restored
+                    else:
+                        st.session_state.qa_history = []
                 st.rerun()
             except Exception as e:
                 st.error(f"불러오기 실패: {e}")
@@ -547,19 +564,17 @@ with tab1:
                 client = OpenAI(api_key=st.session_state.api_key)
                 msgs = []
                 hint = get_fw().guideline_hint
-                if hint:
-                    msgs.append({"role":"system","content":
-                        f"""당신은 교육 전문 AI 어시스턴트입니다.
-
-[절대 규칙]
-1. 사용자가 학년/학기/단원을 언급하면 반드시 그대로 사용하세요. 임의로 바꾸지 마세요.
-2. 아래 문서 내용을 최우선으로 참고하세요.
-3. 문서에 없는 내용은 일반 교육학 지식으로 보완하되, 문서 내용과 모순되면 안 됩니다.
-4. 수업활동, 방법, 예시를 구체적이고 상세하게 작성하세요.
-5. 답변 길이는 충분히 상세하게 작성하세요.
-
-[참고 문서]
-{hint[:2500]}""})
+                sys_text = (
+                    "당신은 교육 전문 AI 어시스턴트입니다." + chr(10) + chr(10) +
+                    "[절대 규칙]" + chr(10) +
+                    "1. 학년/학기/단원을 언급하면 반드시 그대로 사용하세요." + chr(10) +
+                    "2. 아래 문서 내용을 최우선으로 참고하세요." + chr(10) +
+                    "3. 문서 없는 내용은 교육학 지식으로 보완하되 모순 금지." + chr(10) +
+                    "4. 수업활동, 방법, 예시를 구체적이고 상세하게 작성하세요." + chr(10) +
+                    "5. 답변은 충분히 상세하게 작성하세요." + chr(10) + chr(10) +
+                    "[참고 문서]" + chr(10) + (hint[:2500] if hint else "")
+                )
+                msgs.append({"role":"system","content": sys_text})
                 msgs.append({"role":"user","content":prompt})
                 resp = client.chat.completions.create(
                     model=st.session_state.model,
