@@ -1,6 +1,6 @@
 """
 GasCore — 쓸수록 나를 닮아가는 AI
-교사용 인터페이스 (사용자 친화적 리디자인)
+범용 도메인 AI 인터페이스
 """
 import streamlit as st
 import pickle, io, os, time
@@ -401,7 +401,7 @@ if not st.session_state.initialized:
     c1, c2, c3 = st.columns(3)
     features = [
         ("📄", "내 문서 기반",
-         "계약서, 업무매뉴얼, 교과서...\n어떤 문서든 올리면 그게 AI의 기준이 돼요."),
+         "계약서, 업무매뉴얼, 보고서...\n어떤 문서든 올리면 그게 AI의 기준이 돼요."),
         ("🌱", "쓸수록 성장",
          "승인 버튼을 누를수록\nAI가 내 스타일과 기준을 기억해요."),
         ("🔒", "도메인 이탈 차단",
@@ -677,7 +677,7 @@ with tab2:
             st.markdown("""
 <div class="gc-card" style="text-align:center;padding:2rem;color:#7986a8;">
     ← 아이디어 생성 버튼을 눌러보세요<br>
-    <small>AI가 내 문서 기반으로 수업활동을 제안해요</small>
+    <small>AI가 내 문서 기반으로 아이디어를 제안해요</small>
 </div>
 """, unsafe_allow_html=True)
         else:
@@ -818,7 +818,7 @@ with tab4:
     if not has_gen:
         st.markdown("""
 <div class="gc-card" style="text-align:center;padding:2rem;color:#7986a8;">
-    '수업활동 만들기' 탭에서 아이디어를 승인하면<br>
+    'AI 발전시키기' 탭에서 아이디어를 승인하면<br>
     여기서 AI에 반영할 수 있어요 🌱
 </div>
 """, unsafe_allow_html=True)
