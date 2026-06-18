@@ -217,7 +217,7 @@ with st.sidebar:
 
     # ── 문서 업로드 ──────────────────────────────────────
     st.markdown("### 📄 내 문서 불러오기")
-    st.caption("교육계획서, 교과서, 업무매뉴얼 등 PDF/Word/텍스트 파일")
+    st.caption("PDF, Word, 텍스트 등 어떤 문서든 업로드하세요")
 
     uploaded = st.file_uploader(
         "파일 선택",
@@ -401,7 +401,7 @@ if not st.session_state.initialized:
     c1, c2, c3 = st.columns(3)
     features = [
         ("📄", "내 문서 기반",
-         "교육계획서, 교과서, 업무매뉴얼...\n어떤 문서든 올리면 그게 AI의 기준이 돼요."),
+         "계약서, 업무매뉴얼, 교과서...\n어떤 문서든 올리면 그게 AI의 기준이 돼요."),
         ("🌱", "쓸수록 성장",
          "승인 버튼을 누를수록\nAI가 내 스타일과 기준을 기억해요."),
         ("🔒", "도메인 이탈 차단",
@@ -545,7 +545,7 @@ with tab1:
         q = st.text_area(
             "질문",
             height=70,
-            placeholder="예: 이 교육계획서에서 안전교육 시수는 몇 시간인가요?",
+            placeholder="예: 이 문서에서 핵심 내용을 요약해줘",
             label_visibility="collapsed",
             key="qa_main_input"
         )
@@ -567,12 +567,12 @@ with tab1:
                 # corpus_text 전체 사용 (guideline_hint는 앞 1000자만)
                 hint = getattr(fw_ref, "corpus_text", "") or getattr(fw_ref, "guideline_hint", "")
                 sys_text = (
-                    "당신은 교육 전문 AI 어시스턴트입니다." + chr(10) + chr(10) +
+                    "당신은 전문 AI 어시스턴트입니다." + chr(10) + chr(10) +
                     "[절대 규칙]" + chr(10) +
-                    "1. 학년/학기/단원을 언급하면 반드시 그대로 사용하세요." + chr(10) +
+                    "1. 사용자가 특정 조건을 언급하면 반드시 그대로 반영하세요." + chr(10) +
                     "2. 아래 문서 내용을 최우선으로 참고하세요." + chr(10) +
-                    "3. 문서 없는 내용은 교육학 지식으로 보완하되 모순 금지." + chr(10) +
-                    "4. 수업활동, 방법, 예시를 구체적이고 상세하게 작성하세요." + chr(10) +
+                    "3. 문서에 없는 내용은 일반 지식으로 보완하되 문서와 모순 금지." + chr(10) +
+                    "4. 구체적인 방법, 예시를 포함하여 상세하게 작성하세요." + chr(10) +
                     "5. 답변은 충분히 상세하게 작성하세요." + chr(10) + chr(10) +
                     "[참고 문서]" + chr(10) + (hint[:8000] if hint else "")
                 )
@@ -751,7 +751,7 @@ with tab3:
         xai_text = st.text_area(
             "확인할 텍스트",
             height=120,
-            placeholder="예: 안전 교육은 연간 5시간 실시한다 (숫자 오류 테스트)\n예: 학교폭력 예방 교육은 학기별로 실시한다 (정상 테스트)",
+            placeholder="검증할 텍스트를 여기에 붙여넣으세요\n예: 내 문서 내용과 맞는지 확인하고 싶은 문장",
             label_visibility="collapsed",
             key="l3_text"
         )
