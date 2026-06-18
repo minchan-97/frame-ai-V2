@@ -99,10 +99,10 @@ class EvolvingIndexEngine:
     def __init__(self, grid: int = 6):
         self.grid = grid
         self.sentences: list = []
-        self.generated: list = []         # 승인된 생성 문장
-        self.rejected_auto: list = []     # CoreAI 자동 거부
-        self.rejected_user: list = []     # 사용자 거부
-        self.pending: list = []           # 사용자 검증 대기
+        self.generated: list = []
+        self.rejected_auto: list = []
+        self.rejected_user: list = []
+        self.pending: list = []
         self.generation: int = 0
         self.vocab: dict = {}
         self.V: int = 0
@@ -136,7 +136,7 @@ class EvolvingIndexEngine:
     def _build_vocab(self):
         cnt = Counter(t for s in self.sentences for t in tokenize(s))
         self.vocab = {w:i for i,w in enumerate(
-            w for w,c in cnt.most_common() if c >= 1)}  # 빈도 1 이상
+            w for w,c in cnt.most_common() if c >= 1)}
         self.V = len(self.vocab)
 
     def _vec(self, sentence):
@@ -157,20 +157,25 @@ class EvolvingIndexEngine:
     # ── 개념 조합 생성 (LLM) ─────────────────────────────────
     def _combine_llm(self, sent_a: str, sent_b: str,
                      api_key: str, model: str = "gpt-4o-mini") -> Optional[str]:
-        """LLM으로 두 개념을 의미 있게 조합"""
+        """LLM으로 두 개념을 의미 있게 조합 — 도메인 중립적"""
         try:
             from openai import OpenAI
             client = OpenAI(api_key=api_key)
+
+            # 코퍼스 키워드를 추출해서 도메인 힌트로 사용
+            vocab_words = list(self.vocab.keys())[:20]
+            domain_hint = ", ".join(vocab_words) if vocab_words else ""
+
             prompt = (
-                f"다음 두 교육 개념을 자연스럽게 연결한 한 문장을 만들어줘.\n"
+                f"다음 두 개념을 자연스럽게 연결한 한 문장을 만들어줘.\n"
                 f"개념 A: {sent_a}\n"
-                f"개념 B: {sent_b}\n\n"
+                f"개념 B: {sent_b}\n"
+                f"관련 어휘 힌트: {domain_hint}\n\n"
                 f"규칙:\n"
                 f"- 한 문장으로만 답해\n"
                 f"- 두 개념의 관계나 연결이 드러나야 해\n"
-                f"- 교육학적으로 의미 있어야 해\n"
-                f"- 문장 부호 없이 끝내\n"
-                f"- 예: 'A를 활용한 B 중심 수업은 학생의 능동적 학습을 촉진한다'\n\n"
+                f"- 위 어휘 힌트의 도메인에 맞게 작성해\n"
+                f"- 문장 부호 없이 끝내\n\n"
                 f"문장:"
             )
             resp = client.chat.completions.create(
@@ -183,7 +188,7 @@ class EvolvingIndexEngine:
             result = result.strip("\"'.")
             return result if len(result) > 10 else None
         except Exception:
-            return self._combine(sent_a, sent_b)  # 실패 시 템플릿으로 폴백
+            return self._combine(sent_a, sent_b)
 
     def _combine(self, sent_a: str, sent_b: str,
                  pattern_idx: int = 0) -> Optional[str]:
@@ -195,10 +200,12 @@ class EvolvingIndexEngine:
         kb = next((t for t in tb if t != ka), None)
         if not kb: return None
 
-        # 연결어도 vocab에서 선택
-        verbs = [t for t in self.vocab if len(t) >= 2 and t in
-                 ['지원', '촉진', '강조', '포함', '중시', '활동', '학습',
-                  '설계', '평가', '방법', '교수', '통해', '과정']]
+        # 연결어는 vocab에서 동적으로 추출
+        verbs = [t for t in self.vocab
+                 if len(t) >= 2 and t in
+                 ['지원','촉진','강조','포함','중시','활동','학습',
+                  '설계','평가','방법','통해','과정','운영','활용',
+                  '분석','처리','관리','검증','적용','수행']]
         connector = verbs[pattern_idx % len(verbs)] if verbs else '활용'
 
         patterns = [
@@ -209,16 +216,11 @@ class EvolvingIndexEngine:
         ]
         return patterns[pattern_idx % len(patterns)]
 
-    # ── 1세대 생성 (CoreAI 1차 검증까지) ─────────────────────
+    # ── 후보 생성 ─────────────────────────────────────────────
     def generate_candidates(self, max_candidates: int = 10,
                             logp_thr: float = -13.0,
                             api_key: str = "",
                             model: str = "gpt-4o-mini") -> list:
-        """
-        SOM 빈 자리에서 후보 생성 → 검증
-        진화용 검증: SOM 이웃 유사도 기반 (NeuralMarkov 대신)
-        → 닭달걀 문제 해결: 아직 없는 조합도 통과 가능
-        """
         if not self.som or not self.is_trained:
             return []
 
@@ -237,7 +239,6 @@ class EvolvingIndexEngine:
             sent_a = neighbors[0][1][0]
             sent_b = neighbors[min(1, len(neighbors)-1)][1][0]
 
-            # 생성
             if use_llm:
                 new_sent = self._combine_llm(sent_a, sent_b, api_key, model)
             else:
@@ -253,12 +254,11 @@ class EvolvingIndexEngine:
 
             self.stats["total_generated"] += 1
 
-            # 진화용 검증: vocab 어휘 1개 이상이면 통과
             toks = tokenize(new_sent)
             vocab_hit = sum(1 for t in toks if t in self.vocab)
             vocab_ratio = vocab_hit / max(len(toks), 1)
 
-            if vocab_ratio >= 0.1:  # 느슨한 기준 — 사용자 2차 검증이 핵심
+            if vocab_ratio >= 0.1:
                 status = "PASS" if vocab_ratio >= 0.5 else "WARNING"
                 logp   = -10.0 + (vocab_ratio * 5.0)
                 self.stats["auto_passed"] += 1
@@ -284,20 +284,16 @@ class EvolvingIndexEngine:
 
     # ── 사용자 2차 검증 ───────────────────────────────────────
     def user_approve(self, candidate: dict):
-        """사용자 승인 → 인덱스 추가"""
         self.sentences.append(candidate["sentence"])
         self.generated.append({**candidate, "user_action": "approved"})
         self.stats["user_approved"] += 1
-        # pending에서 제거
         self.pending = [p for p in self.pending
                        if p["sentence"] != candidate["sentence"]]
-        # 증분 학습
         self._incremental_train(candidate["sentence"])
         self._rebuild_som()
         self.generation += 1
 
     def user_reject(self, candidate: dict, reason: str = ""):
-        """사용자 거부 → 폐기"""
         self.rejected_user.append({
             **candidate,
             "reason": reason,
@@ -308,13 +304,12 @@ class EvolvingIndexEngine:
                        if p["sentence"] != candidate["sentence"]]
 
     def _incremental_train(self, sentence: str):
-        """새 문장을 NeuralMarkov에 증분 학습"""
         if not self.nm: return
         toks = tokenize(sentence)
         for i,t in enumerate(toks):
             self.nm.uni[t]   += 1
             self.nm.total    += 1
-            if i>=1: self.nm.bi[toks[i-1]][t]           += 1
+            if i>=1: self.nm.bi[toks[i-1]][t]               += 1
             if i>=2: self.nm.tri[(toks[i-2],toks[i-1])][t] += 1
         self._build_vocab()
 
@@ -338,7 +333,6 @@ class EvolvingIndexEngine:
                 "total": self.nm.total,
                 "alpha": getattr(self.nm, "alpha", 0.001),
             }
-        # SOM W 행렬 저장 → 로드 시 재학습 불필요
         if self.som is not None:
             data["som"] = {
                 "W":                self.som.W,
@@ -375,7 +369,6 @@ class EvolvingIndexEngine:
 
         ei._build_vocab()
 
-        # SOM 복원 — W 행렬 저장됐으면 재학습 없이 즉시 복원
         if "som" in data:
             sd = data["som"]
             ei.som = SOM(grid=sd["grid"], dim=sd["dim"])
@@ -384,7 +377,6 @@ class EvolvingIndexEngine:
                 int(k): v for k,v in sd["neuron_sentences"].items()
             }
         else:
-            # 구버전 pkl → 재학습
             ei._rebuild_som()
 
         ei.is_trained = True
@@ -393,12 +385,12 @@ class EvolvingIndexEngine:
     # ── 통계 ─────────────────────────────────────────────────
     def summary(self) -> dict:
         return {
-            "원본 문장": len(self.sentences) - len(self.generated),
-            "승인된 생성": len(self.generated),
-            "대기 중": len(self.pending),
-            "자동 거부": self.stats["auto_rejected"],
-            "사용자 거부": self.stats["user_rejected"],
-            "총 문장": len(self.sentences),
-            "진화 세대": self.generation,
-            "빈 자리": len(self.som.get_empty()) if self.som else 0,
+            "원본 문장":    len(self.sentences) - len(self.generated),
+            "승인된 생성":  len(self.generated),
+            "대기 중":      len(self.pending),
+            "자동 거부":    self.stats["auto_rejected"],
+            "사용자 거부":  self.stats["user_rejected"],
+            "총 문장":      len(self.sentences),
+            "진화 세대":    self.generation,
+            "빈 자리":      len(self.som.get_empty()) if self.som else 0,
         }
