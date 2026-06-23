@@ -350,7 +350,7 @@ with st.sidebar:
         add_up = st.file_uploader(
             "추가할 문서",
             type=["txt","pdf","docx"],
-            key="add_corpus",
+            key="add_corpus_up",
             label_visibility="collapsed"
         )
         if add_up:
@@ -419,7 +419,7 @@ with st.sidebar:
         add_up = st.file_uploader(
             "추가할 문서",
             type=["txt","pdf","docx"],
-            key="add_corpus",
+            key="add_corpus_up",
             label_visibility="collapsed"
         )
         if add_up:
