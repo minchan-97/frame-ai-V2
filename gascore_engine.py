@@ -6,6 +6,11 @@ Layer 2: CoreAI v1 가드레일 (NeuralMarkov + RAG)
 Layer 3: XAI (토큰별 이탈 설명)
 
 세 레이어가 순환하며 코퍼스가 점점 전문화됨
+
+[변경 — 식7/의미보정 복원 가능하게]
+  nm 저장 시 TinyTransformer tok_emb(+word2idx/idx2word/dim)를 함께 저장,
+  복원 시 WordTransformer 껍데기에 tok_emb를 끼워넣어 _get_vec가 살아나게 함.
+  (저장 누락이던 임베딩을 직렬화 경로에 추가. 그 외 로직은 원본 그대로)
 """
 from __future__ import annotations
 import numpy as np
@@ -527,6 +532,13 @@ class GasCoreFramework:
                         "mu":    getattr(nm,"mu",0.0),
                         "std":   getattr(nm,"std",1.0),
                     }
+                    # [추가] TinyTransformer 임베딩 저장 — 복원 후 식7/의미보정 작동용
+                    _model = getattr(nm, "model", None)
+                    if _model is not None and getattr(_model, "tok_emb", None) is not None:
+                        data["nm"]["tok_emb"]  = _model.tok_emb
+                        data["nm"]["word2idx"] = getattr(nm, "word2idx", {})
+                        data["nm"]["idx2word"] = getattr(nm, "idx2word", [])
+                        data["nm"]["dim"]      = getattr(nm, "dim", 32)
                 except Exception: pass
             # CoreAI v2
             try:
@@ -589,6 +601,21 @@ class GasCoreFramework:
             fw.nm.mu    = nm.get("mu",  0.0)
             fw.nm.std   = nm.get("std", 1.0)
             fw.nm.is_trained = True
+            # [추가] 저장된 임베딩 복원 — 식7(_score_mismatch)/의미보정(_semantic_bonus) 작동용
+            if "tok_emb" in nm:
+                try:
+                    from neural_markov_engine import WordTransformer
+                    fw.nm.idx2word = list(nm.get("idx2word", []))
+                    fw.nm.word2idx = dict(nm.get("word2idx", {}))
+                    fw.nm.dim      = nm.get("dim", 32)
+                    _vsize = len(fw.nm.idx2word) if fw.nm.idx2word else len(fw.nm.word2idx)
+                    if _vsize > 0:
+                        fw.nm.model = WordTransformer(
+                            vocab_size=_vsize, dim=fw.nm.dim,
+                            n_layers=1, max_len=128, seed=42)
+                        fw.nm.model.tok_emb = np.array(nm["tok_emb"])
+                except Exception:
+                    fw.nm.model = None
             if fw.nm.mu == 0.0 and fw.corpus_text:
                 fw.nm._calibrate(fw.corpus_text)
 
