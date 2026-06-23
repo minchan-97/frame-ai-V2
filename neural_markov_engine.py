@@ -10,17 +10,6 @@ TinyTransformer(word-level) + JM Smoothing 마르코프 결합
   → 조사 변화/유사 표현 오탐 대폭 감소
 
 GPU 없음, numpy만, CPU only
-
-[v2 변경점 — 분포 기반 자동 캘리브레이션 임계값]
-  기존: PASS/WARNING/FATAL 을 -10.0 / -14.0 고정 상수로 판정
-  문제: in-domain 분포(코퍼스마다 mu≈-0.5, std≈0.2~1.0)와 무관하게
-        고정값을 써서, 임계값이 분포에서 30σ 이상 떨어진 위치 →
-        가드레일이 사실상 잠기지 않고 이상 문장도 PASS로 통과.
-  수정: 임계값 = mu - k·std (코퍼스 캘리브레이션 분포에서 자동 산출)
-        PASS  : avg_logP >= mu - PASS_K·std   (기본 k=3)
-        FATAL : avg_logP <  mu - FATAL_K·std  (기본 k=5)
-        4개 도메인(나이스/특허/소설/수업) 실험에서 k=3 기준
-        in-domain 보존율 98.3~100%, 이상 문장 전수 차단 확인.
 """
 from __future__ import annotations
 import numpy as np
@@ -219,16 +208,7 @@ class NeuralMarkovEngine:
       2. OOV/저확률 토큰: TinyTransformer 임베딩으로 의미 유사 토큰 확인
       3. 유사 토큰이 코퍼스 안에 있으면 → 패널티 완화
       4. 최종 점수 = 마르코프 logP + 의미 보정값
-      5. 판정: mu - k·std 분포 기반 임계값 (자동 캘리브레이션)
     """
-
-    # ── 분포 기반 판정 계수 (mu - k·std) ──────────────────────
-    # 4개 도메인 실험 검증: k=3 기준 in-domain 보존율 98.3~100%,
-    # 이상 문장 전수 차단. 도메인 무관하게 안정적.
-    PASS_K  = 3.0    # PASS  경계: avg_logP >= mu - 3σ
-    FATAL_K = 5.0    # FATAL 경계: avg_logP <  mu - 5σ
-    # WARNING = 그 사이 구간
-
     def __init__(self, lambda_1=0.6, lambda_2=0.3, lambda_3=0.1, alpha=0.001):
         self.l1 = lambda_1; self.l2 = lambda_2; self.l3 = lambda_3
         self.alpha = alpha
@@ -242,20 +222,9 @@ class NeuralMarkovEngine:
         self.is_trained = False
         self.corpus_name = ""
         self.dim = 32
-        # 캘리브레이션 (in-domain 분포)
+        # 캘리브레이션
         self.mu:  float = 0.0
         self.std: float = 1.0
-
-    # ── 분포 기반 임계값 산출 ─────────────────────────────────
-    @property
-    def pass_thr(self) -> float:
-        """PASS 경계 = mu - PASS_K·std"""
-        return self.mu - self.PASS_K * self.std
-
-    @property
-    def fatal_thr(self) -> float:
-        """FATAL 경계 = mu - FATAL_K·std"""
-        return self.mu - self.FATAL_K * self.std
 
     def train(self, corpus_text: str, embedding_dim: int = 32,
               epochs: int = 20, on_epoch=None):
@@ -288,26 +257,18 @@ class NeuralMarkovEngine:
         self._calibrate(corpus_text)
 
     def _calibrate(self, corpus_text: str):
-        """
-        원본 문장들로 in-domain logP 분포(mu, std) 추정.
-        이 mu/std가 PASS/FATAL 임계값(mu-k·std)의 기준이 된다.
-
-        [변경] 기존 max(std, 2.0) 하한이 실제 분포 std(0.2~1.0)를
-        2.0으로 덮어써서 임계값이 분포와 따로 놀던 문제를 제거.
-        std 하한은 0 나눗셈/퇴화 방지를 위한 최소값(0.15)만 유지.
-        """
+        """원본 문장들로 logP 기준점 계산"""
         import numpy as _np
         sents  = [s.strip() for s in corpus_text.split('\n')
                   if s.strip() and len(s.strip()) > 8]
         scores = []
-        for s in sents:           # 전체 문장 사용 (기존: 앞 100개만)
+        for s in sents[:100]:
             r  = self.evaluate(s)
             lp = r.get('avg_logp', -20.0)
             if lp > -50: scores.append(lp)
         if scores:
             self.mu  = float(_np.mean(scores))
-            # 실제 분포 std 사용. 과도한 부풀림 없이 최소 하한만.
-            self.std = max(float(_np.std(scores)), 0.15)
+            self.std = max(float(_np.std(scores)), 2.0)
 
     def _get_vec(self, word: str) -> Optional[np.ndarray]:
         if word in self.word2idx and self.model:
@@ -377,8 +338,7 @@ class NeuralMarkovEngine:
             lp_corrected = lp_raw + bonus
 
             total_lp += lp_corrected
-            # 이상 토큰: 분포 기준 fatal_thr 미만 + 그래프 밖
-            is_outlier = lp_corrected < self.fatal_thr and not in_graph
+            is_outlier = lp_corrected < -12.0 and not in_graph
             per.append({
                 "token": wc,
                 "logp_raw": lp_raw,
@@ -396,20 +356,8 @@ class NeuralMarkovEngine:
         sims = [float(np.dot(vecs[i], vecs[i+1])) for i in range(len(vecs)-1)]
         return float((1.0 - np.mean(sims)) / 2.0)
 
-    def evaluate(self, text: str, logp_thr: float = None,
+    def evaluate(self, text: str, logp_thr: float = -8.0,
                  mis_thr: float = 0.55) -> dict:
-        """
-        도메인 이탈 판정.
-
-        [변경] PASS/WARNING/FATAL 을 고정 상수(-10/-14)가 아니라
-        분포 기반 mu-k·std 로 판정.
-          PASS    : avg_logP >= mu - 3σ   (pass_thr)
-          WARNING : fatal_thr <= avg_logP < pass_thr
-          FATAL   : avg_logP <  mu - 5σ   (fatal_thr)
-
-        logp_thr 인자는 하위호환용. 명시되면 PASS 경계를 그 값으로
-        강제 오버라이드(수동 모드). None이면 분포 기반 자동.
-        """
         import time
         t0 = time.perf_counter()
         pairs = tokenize_dual(text)
@@ -417,8 +365,7 @@ class NeuralMarkovEngine:
         raw_tokens = [raw for raw, _ in pairs]
         if len(tokens) < 3:
             return {"status": "SKIP", "avg_logp": 0.0, "mismatch": 0.0,
-                    "elapsed_ms": 0.0, "per_token": [],
-                    "pass_thr": self.pass_thr, "fatal_thr": self.fatal_thr}
+                    "elapsed_ms": 0.0, "per_token": []}
 
         avg_logp, per = self._score_jm(tokens)
         for i, p in enumerate(per):
@@ -427,20 +374,19 @@ class NeuralMarkovEngine:
         mismatch = self._score_mismatch(tokens)
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
-        # 임계값: 자동(분포) 또는 수동 오버라이드
-        pass_thr  = self.pass_thr if logp_thr is None else float(logp_thr)
-        fatal_thr = self.fatal_thr if logp_thr is None else float(logp_thr) - abs(self.PASS_K - self.FATAL_K) * self.std
+        mf = avg_logp < logp_thr; ef = mismatch > mis_thr
 
-        ef = mismatch > mis_thr
-
-        # 3구간 판정 (분포 기반)
-        if avg_logp >= pass_thr and not ef:
+        # 3구간 판정
+        # PASS:     logP > -10          → 도메인 안
+        # WARNING:  -10 ~ -12           → 경계 (도메인 안이지만 이상한 것 포함)
+        # FATAL:    logP < -14          → 도메인 완전 이탈
+        if avg_logp >= -10.0 and not ef:
             status = "PASS"
-        elif avg_logp >= fatal_thr and not ef:
+        elif avg_logp >= -14.0 and not ef:
             status = "WARNING"
-        elif avg_logp < fatal_thr or (avg_logp < pass_thr and ef):
+        elif avg_logp < -14.0 or (mf and ef):
             status = "FATAL"
-        elif not (avg_logp < pass_thr) and ef:
+        elif not mf and ef:
             status = "CRITICAL"
         else:
             status = "WARNING"
@@ -452,6 +398,4 @@ class NeuralMarkovEngine:
             "elapsed_ms": elapsed_ms,
             "per_token": per,
             "neural_active": self.is_trained,
-            "pass_thr": pass_thr,
-            "fatal_thr": fatal_thr,
         }
