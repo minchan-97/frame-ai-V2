@@ -411,6 +411,51 @@ with st.sidebar:
             use_container_width=True,
         )
 
+                # ── 문서 추가 학습 ──────────────────────────────
+        st.markdown("---")
+        st.markdown("### ➕ 문서 추가 학습")
+        st.caption("기존 학습에 새 문서를 추가해요")
+
+        add_up = st.file_uploader(
+            "추가할 문서",
+            type=["txt","pdf","docx"],
+            key="add_corpus",
+            label_visibility="collapsed"
+        )
+        if add_up:
+            if st.button("➕ 추가 학습 시작", use_container_width=True):
+                with st.spinner("새 문서를 추가 학습 중이에요..."):
+                    try:
+                        raw2  = add_up.read()
+                        name2 = add_up.name.lower()
+                        if name2.endswith(".pdf"):
+                            import pypdf
+                            new_text = "\n".join(
+                                p.extract_text() or ""
+                                for p in pypdf.PdfReader(io.BytesIO(raw2)).pages)
+                        elif name2.endswith(".docx"):
+                            import docx as _docx
+                            new_text = "\n".join(
+                                p.text for p in _docx.Document(io.BytesIO(raw2)).paragraphs
+                                if p.text.strip())
+                        else:
+                            new_text = raw2.decode("utf-8", errors="ignore")
+
+                        fw2 = get_fw()
+                        fw2.corpus_text    = getattr(fw2,"corpus_text","") + "\n" + new_text
+                        fw2.guideline_hint = fw2.corpus_text[:1000]
+                        if fw2.nm and fw2.nm.is_trained:
+                            fw2.nm.train(new_text, embedding_dim=32, epochs=5)
+                        if fw2.evolving:
+                            fw2.evolving.initialize(fw2.corpus_text, epochs=5)
+                        fw2.cycle += 1
+                        set_fw(fw2)
+                        st.success(f"✅ '{add_up.name}' 추가 학습 완료!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"추가 학습 실패: {e}")
+                        import traceback; st.code(traceback.format_exc())
+
         # 고급 설정 토글
         st.markdown("---")
         if st.checkbox("⚙️ 고급 설정", value=st.session_state.show_adv):
@@ -581,14 +626,36 @@ with tab1:
 </div>
 """, unsafe_allow_html=True)
 
-            # XAI 경고 (문서 밖 단어 있을 때만)
-            if r.xai and r.xai.outlier_tokens:
-                st.markdown(
-                    f'<div style="margin:2px 0 12px 0;font-size:0.72rem;color:#f87171;padding-left:4px;">'
-                    f'⚠️ 문서 밖 단어 감지: {", ".join(r.xai.outlier_tokens)}</div>',
-                    unsafe_allow_html=True)
-            else:
-                st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
+            # 👍 학습 버튼 + XAI 경고
+            col_like, col_xai = st.columns([1, 4])
+            with col_like:
+                like_key = f"like_{item['question'][:10]}"
+                if r.status in ("PASS",) and st.button("👍 학습", key=like_key,
+                        help="이 답변을 AI 학습에 추가해요"):
+                    fw2 = get_fw()
+                    new_sent = r.answer[:200].replace("\n"," ").strip()
+                    if new_sent and hasattr(fw2, 'corpus_text'):
+                        fw2.corpus_text += "\n" + new_sent
+                        fw2.guideline_hint = fw2.corpus_text[:1000]
+                        if fw2.nm and fw2.nm.is_trained:
+                            from collections import Counter, defaultdict
+                            toks = new_sent.split()
+                            for i,t in enumerate(toks):
+                                fw2.nm.uni[t]  = fw2.nm.uni.get(t,0) + 1
+                                fw2.nm.total  += 1
+                                if i>=1: fw2.nm.bi[toks[i-1]][t] = fw2.nm.bi.get(toks[i-1],{}).get(t,0)+1
+                        if fw2.evolving:
+                            fw2.evolving.sentences.append(new_sent)
+                        set_fw(fw2)
+                        st.success("✅ 학습됨!")
+            with col_xai:
+                if r.xai and r.xai.outlier_tokens:
+                    st.markdown(
+                        f'<div style="margin:2px 0 12px 0;font-size:0.72rem;color:#f87171;padding-left:4px;">'
+                        f'⚠️ 문서 밖 단어: {", ".join(r.xai.outlier_tokens)}</div>',
+                        unsafe_allow_html=True)
+                else:
+                    st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
 
         # 입력
         q = st.text_area(
