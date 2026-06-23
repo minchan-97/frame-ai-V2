@@ -7,6 +7,10 @@ Hopfield 분해기 → 클러스터별 마르코프 + TinyTransformer 의미 보
   - OOV 의미 보정 강화 (TinyTransformer)
   - 클러스터별 정밀 판정
 GPU 없음, numpy only
+
+[v2 변경점]
+  evaluate()가 NeuralMarkov에 logp_thr=-11.5 고정값을 강제로 넘기던 것을 제거.
+  → NeuralMarkov의 분포 기반 자동 캘리브레이션(mu-k·std)이 실제로 발동.
 """
 from __future__ import annotations
 import numpy as np
@@ -409,16 +413,20 @@ class CoreAIv2Engine:
         engine.is_trained = True
         return engine
 
-    def evaluate(self, text: str, logp_thr: float = -11.5,
-                 expand: bool = False) -> dict:
+    def evaluate(self, text: str, expand: bool = False) -> dict:
+        """
+        [변경] logp_thr 인자 제거.
+        NeuralMarkov의 분포 기반 자동 캘리브레이션(mu-k·std)에 판정을 위임.
+        고정 임계값을 더 이상 강제하지 않음.
+        """
         t0 = time.perf_counter()
 
-        # 가드레일 판정 — NeuralMarkov 전체 코퍼스 기준
+        # 가드레일 판정 — NeuralMarkov 전체 코퍼스 기준 (자동 임계값)
         if not self.nm_engine.is_trained:
             verdict = "SKIP"
             best_logp = 0.0
         else:
-            nm_result = self.nm_engine.evaluate(text, logp_thr=logp_thr)
+            nm_result = self.nm_engine.evaluate(text)   # logp_thr 미지정 → 자동
             verdict   = nm_result.get("status", "SKIP")
             best_logp = nm_result.get("avg_logp", 0.0)
 
