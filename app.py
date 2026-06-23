@@ -1,6 +1,14 @@
 """
 GasCore — 쓸수록 나를 닮아가는 AI
 범용 도메인 AI 인터페이스
+
+[v2 변경점 — 분포 기반 자동 캘리브레이션 정합]
+  - run_guardrail / explain 호출에서 logp_thr 강제 전달 제거
+    → 엔진의 mu-k·std 자동 임계값이 그대로 작동.
+  - 고급설정의 '도메인 민감도(절대 logP)' 슬라이더를
+    'k값(mu-kσ)' 슬라이더로 교체. 작을수록 엄격(이탈 잘 잡음),
+    클수록 관대(false positive 적음). 변경 시 nm.PASS_K/FATAL_K에 반영.
+  - XAI 토큰 색칠 기준도 고정 -10/-14 대신 nm.pass_thr/fatal_thr 사용.
 """
 import streamlit as st
 import pickle, io, os, time
@@ -173,6 +181,22 @@ except Exception as e:
     st.error(f"엔진을 불러오지 못했어요: {e}")
     st.stop()
 
+
+# ── XAI 토큰 색칠 헬퍼 (분포 임계값 기준) ──────────────────────
+def _tok_html(token_scores, pass_thr, fatal_thr):
+    """토큰별 logP를 분포 임계값으로 색칠."""
+    html = ""
+    for tok, lp, _ in token_scores:
+        if lp >= pass_thr:
+            cls = "tok-ok"
+        elif lp >= fatal_thr:
+            cls = "tok-w"
+        else:
+            cls = "tok-bad"
+        html += f'<span class="{cls}">{tok}</span> '
+    return html
+
+
 # ── 세션 초기화 ──────────────────────────────────────────────
 _defaults = {
     "fw":           None,
@@ -185,8 +209,8 @@ _defaults = {
     "corpus_name":  "",
     "pkl_bytes":    None,
     "show_adv":     False,
-    "logp_thr":     -11.5,
-    "ev_thr":       -13.0,
+    "pass_k":       3.0,    # mu - k·std 의 k (PASS 경계)
+    "fatal_k":      5.0,    # mu - k·std 의 k (FATAL 경계)
     "max_retry":    3,
 }
 for k, v in _defaults.items():
@@ -195,6 +219,15 @@ for k, v in _defaults.items():
 
 def get_fw(): return st.session_state.fw
 def set_fw(fw): st.session_state.fw = fw
+
+def _apply_k(fw):
+    """현재 슬라이더 k값을 nm 엔진에 반영."""
+    if fw and getattr(fw, "nm", None):
+        fw.nm.PASS_K  = float(st.session_state.pass_k)
+        fw.nm.FATAL_K = float(st.session_state.fatal_k)
+    if fw and getattr(fw, "coreai_v2", None) and getattr(fw.coreai_v2, "nm_engine", None):
+        fw.coreai_v2.nm_engine.PASS_K  = float(st.session_state.pass_k)
+        fw.coreai_v2.nm_engine.FATAL_K = float(st.session_state.fatal_k)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -254,6 +287,7 @@ with st.sidebar:
                     prog = st.progress(0)
                     fw.initialize(text, epochs=10, som_grid=6,
                                   on_progress=lambda p, m: prog.progress(p))
+                    _apply_k(fw)
                     set_fw(fw)
                     st.session_state.initialized = True
                     st.session_state.qa_offline  = []
@@ -287,13 +321,13 @@ with st.sidebar:
                 with st.spinner("불러오는 중..."):
                     data = pickle.loads(st.session_state.pkl_bytes)
                     fw   = GasCoreFramework.from_dict(data)
+                    _apply_k(fw)
                     set_fw(fw)
                     st.session_state.initialized = True
                     st.session_state.qa_offline  = []
                     # 대화 기록 복원 (저장된 경우)
                     saved_qa = data.get("qa_history", [])
                     if saved_qa:
-                        # 간략화된 형식을 result 객체처럼 래핑
                         from types import SimpleNamespace
                         restored = []
                         for item in saved_qa:
@@ -342,6 +376,11 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
+        # 현재 적용 임계값 표시 (분포 기반)
+        pt = s.get("nm_pass_thr"); ft = s.get("nm_fatal_thr")
+        if pt is not None:
+            st.caption(f"🎯 자동 임계값  PASS≥{pt}  ·  FATAL<{ft}")
+
         # ── 문서 추가 학습 ──────────────────────────────
         st.markdown("---")
         st.markdown("### ➕ 문서 추가 학습")
@@ -373,16 +412,19 @@ with st.sidebar:
                             new_text = raw2.decode("utf-8", errors="ignore")
 
                         fw2 = get_fw()
-                        # 기존 corpus에 추가
                         fw2.corpus_text     = getattr(fw2,"corpus_text","") + "\n" + new_text
                         fw2.guideline_hint  = fw2.corpus_text[:1000]
                         # NM 증분 학습
                         if fw2.nm and fw2.nm.is_trained:
                             fw2.nm.train(new_text, embedding_dim=32, epochs=5)
+                            # 추가 후 전체 코퍼스로 재캘리브레이션
+                            fw2.nm._calibrate(fw2.corpus_text)
                         # evolving 재초기화
                         if fw2.evolving:
                             fw2.evolving.initialize(
                                 fw2.corpus_text, epochs=5)
+                        fw2._rebuild_layers()
+                        _apply_k(fw2)
                         fw2.cycle += 1
                         set_fw(fw2)
                         st.success(f"✅ '{add_up.name}' 추가 학습 완료!")
@@ -415,14 +457,22 @@ with st.sidebar:
         st.markdown("---")
         if st.checkbox("⚙️ 고급 설정", value=st.session_state.show_adv):
             st.session_state.show_adv = True
-            st.session_state.logp_thr = st.slider(
-                "도메인 민감도", -15.0, -5.0, st.session_state.logp_thr, 0.5,
-                help="낮을수록 도메인 외 답변을 더 엄격하게 차단해요")
+            st.caption("판정 임계값 = mu − k·std (코퍼스 분포 자동 기준)")
+            st.session_state.pass_k = st.slider(
+                "민감도 k (PASS 경계)", 1.0, 6.0, st.session_state.pass_k, 0.5,
+                help="작을수록 엄격(이탈을 더 잘 잡음), 클수록 관대(정상 오탐 적음). "
+                     "4개 도메인 검증 권장값 ≈ 3.0")
+            st.session_state.fatal_k = st.slider(
+                "민감도 k (FATAL 경계)", 3.0, 8.0,
+                max(st.session_state.fatal_k, st.session_state.pass_k+1.0), 0.5,
+                help="이 값 미만이면 도메인 완전 이탈로 판정. PASS 경계보다 커야 함.")
             st.session_state.max_retry = st.slider(
                 "재생성 최대 횟수", 1, 5, st.session_state.max_retry)
             st.session_state.model = st.selectbox(
                 "GPT 모델", ["gpt-4o-mini", "gpt-4o"],
                 index=["gpt-4o-mini","gpt-4o"].index(st.session_state.model))
+            # 변경 즉시 엔진에 반영
+            _apply_k(get_fw())
         else:
             st.session_state.show_adv = False
 
@@ -475,7 +525,6 @@ if not st.session_state.initialized:
 </div>
 """, unsafe_allow_html=True)
 
-    # UnivAI와의 차이 강조
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("#### GasCore는 다른 AI 도구와 다르게 작동해요")
     d1, d2 = st.columns(2)
@@ -512,6 +561,7 @@ if not st.session_state.initialized:
 
 # ── 초기화 후 메인 ──────────────────────────────────────────
 fw = get_fw()
+_apply_k(fw)   # 매 렌더마다 현재 k값 보장
 s  = fw.summary()
 approved = s.get("ev_승인된 생성", 0)
 cycle    = s["cycle"]
@@ -556,6 +606,10 @@ with tab1:
     elif not fw.is_initialized:
         st.info("사이드바에서 문서를 먼저 학습해주세요.")
     else:
+        # 현재 임계값(색칠용)
+        cur_pt = fw.nm.pass_thr  if fw.nm and fw.nm.is_trained else -1.0
+        cur_ft = fw.nm.fatal_thr if fw.nm and fw.nm.is_trained else -2.0
+
         # 대화 이력 표시
         for item in st.session_state.qa_history[-8:]:
             r    = item["result"]
@@ -563,12 +617,10 @@ with tab1:
             label = {"PASS":"문서 내 정보","WARNING":"일부 확인 필요","FATAL":"문서 범위 초과"}.get(r.status,"")
             v_color = {"PASS":"#4ade80","WARNING":"#fbbf24","FATAL":"#f87171"}.get(r.status,"#7986a8")
 
-            # 질문
             st.markdown(
                 f'<div class="chat-user"><span>{item["question"]}</span></div>',
                 unsafe_allow_html=True)
 
-            # 답변 — 카드형으로 전체 표시
             st.markdown(f"""
 <div style="background:#1a1d27;border:1px solid {v_color}40;border-left:3px solid {v_color};
             border-radius:0 12px 12px 12px;padding:1rem 1.2rem;margin:4px 0 4px 0;">
@@ -581,7 +633,6 @@ with tab1:
 </div>
 """, unsafe_allow_html=True)
 
-            # 👍 학습 버튼 + XAI 경고
             col_like, col_xai = st.columns([1, 4])
             with col_like:
                 like_key = f"like_{item['question'][:10]}"
@@ -593,7 +644,6 @@ with tab1:
                         fw2.corpus_text += "\n" + new_sent
                         fw2.guideline_hint = fw2.corpus_text[:1000]
                         if fw2.nm and fw2.nm.is_trained:
-                            from collections import Counter, defaultdict
                             toks = new_sent.split()
                             for i,t in enumerate(toks):
                                 fw2.nm.uni[t]  = fw2.nm.uni.get(t,0) + 1
@@ -635,7 +685,6 @@ with tab1:
                 client = OpenAI(api_key=st.session_state.api_key)
                 msgs = []
                 fw_ref = get_fw()
-                # corpus_text 전체 사용 (guideline_hint는 앞 1000자만)
                 hint = getattr(fw_ref, "corpus_text", "") or getattr(fw_ref, "guideline_hint", "")
                 sys_text = (
                     "당신은 전문 AI 어시스턴트입니다." + chr(10) + chr(10) +
@@ -657,11 +706,11 @@ with tab1:
 
             with st.spinner("문서를 참고하여 답변 중이에요..."):
                 try:
+                    # [변경] logp_thr 미전달 → 엔진 자동 임계값 사용
                     result = fw.run_guardrail(
                         question=q.strip(),
                         llm_fn=llm_fn_main,
                         max_attempts=st.session_state.max_retry,
-                        logp_thr=st.session_state.logp_thr,
                     )
                     st.session_state.qa_history.insert(0, {
                         "question": q.strip(),
@@ -681,11 +730,10 @@ with tab1:
                     xai = last["result"].xai
                     st.caption(xai.explanation)
                     if xai.token_scores:
-                        html = ""
-                        for tok, lp, _ in xai.token_scores:
-                            cls = "tok-ok" if lp >= -10 else "tok-w" if lp >= -14 else "tok-bad"
-                            html += f'<span class="{cls}">{tok}</span> '
-                        st.markdown(html, unsafe_allow_html=True)
+                        pt = getattr(xai, "pass_thr", cur_pt)
+                        ft = getattr(xai, "fatal_thr", cur_ft)
+                        st.markdown(_tok_html(xai.token_scores, pt, ft),
+                                    unsafe_allow_html=True)
                         st.caption("🟢 문서 내 단어  🟡 경계  🔴 문서 밖 단어")
 
 
@@ -713,7 +761,6 @@ with tab2:
                         fw.evolving.pending = []
                     cands = fw.generate_candidates(
                         max_candidates=max_cands,
-                        logp_thr=st.session_state.ev_thr,
                         api_key=st.session_state.api_key,
                         model=st.session_state.model,
                     )
@@ -727,7 +774,6 @@ with tab2:
                     import traceback; st.code(traceback.format_exc())
 
         st.markdown("---")
-        # 통계 (친화적)
         if fw.evolving:
             ev_s = fw.evolving.summary()
             approved_n = ev_s.get("승인된 생성", 0)
@@ -757,7 +803,7 @@ with tab2:
                 if st.button("✅ 전부 좋아요", use_container_width=True, key="ap_all"):
                     for c in list(fw.evolving.pending):
                         fw.approve_candidate(c)
-                    set_fw(fw); st.rerun()
+                    _apply_k(fw); set_fw(fw); st.rerun()
             with cb2:
                 if st.button("❌ 전부 거부", use_container_width=True, key="rj_all"):
                     for c in list(fw.evolving.pending):
@@ -794,7 +840,7 @@ with tab2:
                     if st.button("✅ 승인 — 학습에 추가", key=f"ap_{key_base}",
                                  use_container_width=True, type="primary"):
                         fw.approve_candidate(cand)
-                        set_fw(fw); st.rerun()
+                        _apply_k(fw); set_fw(fw); st.rerun()
                 with cb:
                     r = st.selectbox("거부 이유", reasons,
                                      key=f"rs_{key_base}",
@@ -806,9 +852,6 @@ with tab2:
                 st.markdown("")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 탭 3: 가드레일 (답변 검증)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 탭 3: 텍스트 직접 검증 (XAI)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -831,8 +874,8 @@ with tab3:
 
         if run_xai and xai_text.strip():
             try:
-                xai = fw.explain(xai_text.strip(),
-                                 logp_thr=st.session_state.logp_thr)
+                # [변경] logp_thr 미전달 → 자동 임계값
+                xai = fw.explain(xai_text.strip())
                 if xai:
                     v = xai.verdict
                     v_color = {"PASS":"#4ade80","WARNING":"#fbbf24","FATAL":"#f87171"}.get(v,"#7986a8")
@@ -850,11 +893,10 @@ with tab3:
                     st.markdown("---")
                     st.markdown("**단어별 분석**")
                     if xai.token_scores:
-                        html = ""
-                        for tok, lp, _ in xai.token_scores:
-                            cls = "tok-ok" if lp >= -10 else "tok-w" if lp >= -14 else "tok-bad"
-                            html += f'<span class="{cls}">{tok}</span> '
-                        st.markdown(html, unsafe_allow_html=True)
+                        pt = getattr(xai, "pass_thr", fw.nm.pass_thr)
+                        ft = getattr(xai, "fatal_thr", fw.nm.fatal_thr)
+                        st.markdown(_tok_html(xai.token_scores, pt, ft),
+                                    unsafe_allow_html=True)
                         st.caption("🟢 문서 내 단어  🟡 경계 단어  🔴 문서 밖 단어")
 
                     st.markdown("---")
@@ -902,6 +944,7 @@ with tab4:
                      type="primary"):
             with st.spinner("AI가 학습 중이에요..."):
                 fw.complete_cycle(epochs=5)
+                _apply_k(fw)
                 set_fw(fw)
             st.success(f"✓ {fw.cycle}번째 학습 완료! AI가 조금 더 나를 닮아졌어요 🌿")
             st.balloons()
@@ -918,4 +961,3 @@ with tab4:
     <span style="font-size:0.68rem;color:#7986a8;float:right;">{gen}세대</span>
 </div>
 """, unsafe_allow_html=True)
-
