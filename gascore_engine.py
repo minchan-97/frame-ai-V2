@@ -6,11 +6,6 @@ Layer 2: CoreAI v1 가드레일 (NeuralMarkov + RAG)
 Layer 3: XAI (토큰별 이탈 설명)
 
 세 레이어가 순환하며 코퍼스가 점점 전문화됨
-
-[v2 변경점 — 분포 기반 임계값 일관화]
-  XAILayer가 PASS/WARNING/FATAL 및 이탈 토큰을 -10/-14/-12 고정 상수로
-  판정하던 것을 nm.pass_thr / nm.fatal_thr (mu-k·std) 기준으로 통일.
-  run_guardrail / explain 의 logp_thr 강제 전달 제거 → 자동 캘리브레이션 발동.
 """
 from __future__ import annotations
 import numpy as np
@@ -122,8 +117,6 @@ class XAIResult:
     cluster_hint: str = ""          # 가장 가까운 SOM 클러스터
     explanation: str = ""           # 한국어 설명
     ms: float = 0.0
-    pass_thr: float = 0.0           # 적용된 PASS 경계 (mu-3σ)
-    fatal_thr: float = 0.0          # 적용된 FATAL 경계 (mu-5σ)
 
 
 # ── Layer 3: XAI ─────────────────────────────────────────────
@@ -131,23 +124,17 @@ class XAILayer:
     """
     토큰별 logP 추적 + SOM 클러스터 연결
     "왜 이 답변이 이탈로 판정됐는가"를 설명
-
-    [변경] 판정/색칠 기준을 nm의 분포 임계값(pass_thr/fatal_thr)으로 통일.
     """
     def __init__(self, nm: NeuralMarkovEngine,
                  som_neurons: Optional[dict] = None):
         self.nm = nm
         self.som_neurons = som_neurons or {}  # 뉴런 → 문장 리스트
 
-    def explain(self, text: str) -> XAIResult:
+    def explain(self, text: str, logp_thr: float = -11.5) -> XAIResult:
         t0 = time.perf_counter()
         tokens = tokenize(text)
         if not tokens or not self.nm or not self.nm.is_trained:
             return XAIResult(verdict="SKIP", avg_logp=0.0)
-
-        # nm 분포 임계값
-        pass_thr  = self.nm.pass_thr
-        fatal_thr = self.nm.fatal_thr
 
         # 토큰별 logP 계산
         token_scores = []
@@ -167,22 +154,22 @@ class XAILayer:
                 p3 = self.nm.tri[(wpp,wp)][wc]/self.nm.bi[wpp][wp] if self.nm.bi[wpp][wp]>0 else 0
             pjm = 0.6*p3+0.3*p2+0.1*p1
             lp = float(np.log(pjm+1e-12))
-            # 이탈 토큰: 분포 기준 fatal_thr 미만 + 그래프 밖
-            is_outlier = lp < fatal_thr and self.nm.bi.get(tokens[i-1] if i>0 else "", {}).get(wc,0)==0
+            is_outlier = lp < -12.0 and self.nm.bi.get(tokens[i-1] if i>0 else "", {}).get(wc,0)==0
             token_scores.append((wc, round(lp,2), is_outlier))
             total_lp += lp; scored += 1
 
         avg_logp = total_lp/max(scored,1)
         outliers = [t for t,lp,out in token_scores if out]
 
-        # 판정 (분포 기반)
-        if avg_logp >= pass_thr:    verdict = "PASS"
-        elif avg_logp >= fatal_thr: verdict = "WARNING"
-        else:                       verdict = "FATAL"
+        # 판정
+        if avg_logp >= -10.0:      verdict = "PASS"
+        elif avg_logp >= logp_thr: verdict = "WARNING"
+        else:                      verdict = "FATAL"
 
         # SOM 클러스터 힌트
         cluster_hint = ""
         if self.som_neurons:
+            # 이탈 토큰과 가장 관련 있는 클러스터 찾기
             for neuron_idx, sents in self.som_neurons.items():
                 for s in sents:
                     if any(ot in s for ot in outliers[:3]):
@@ -192,7 +179,7 @@ class XAILayer:
 
         # 한국어 설명 생성
         explanation = self._make_explanation(
-            verdict, avg_logp, outliers, cluster_hint, pass_thr, fatal_thr
+            verdict, avg_logp, outliers, cluster_hint, logp_thr
         )
 
         ms = (time.perf_counter()-t0)*1000
@@ -204,24 +191,22 @@ class XAILayer:
             cluster_hint=cluster_hint,
             explanation=explanation,
             ms=ms,
-            pass_thr=pass_thr,
-            fatal_thr=fatal_thr,
         )
 
     def _make_explanation(self, verdict, avg_logp,
-                          outliers, cluster_hint, pass_thr, fatal_thr) -> str:
+                          outliers, cluster_hint, thr) -> str:
         if verdict == "PASS":
-            return f"✅ 도메인 안 — 모든 토큰이 학습된 패턴 안에 있어요 (avg_logP: {avg_logp:+.2f}, PASS경계: {pass_thr:+.2f})"
+            return f"✅ 도메인 안 — 모든 토큰이 학습된 패턴 안에 있어요 (avg_logP: {avg_logp:+.2f})"
         elif verdict == "WARNING":
             out_str = f"'{', '.join(outliers[:3])}'" if outliers else "일부 표현"
             hint = f" → 가장 가까운 개념: '{cluster_hint}'" if cluster_hint else ""
             return (f"🟡 경계 수준 — {out_str}이 코퍼스 경계에 있어요 "
-                    f"(avg_logP: {avg_logp:+.2f}, PASS경계: {pass_thr:+.2f}){hint}")
+                    f"(avg_logP: {avg_logp:+.2f}, 임계값: {thr}){hint}")
         else:
             out_str = f"'{', '.join(outliers[:3])}'" if outliers else "다수 표현"
             hint = f" → 관련 코퍼스 개념: '{cluster_hint}'" if cluster_hint else ""
             return (f"🔴 도메인 이탈 — {out_str}이 학습된 패턴에서 크게 벗어났어요 "
-                    f"(avg_logP: {avg_logp:+.2f}, FATAL경계: {fatal_thr:+.2f}){hint}")
+                    f"(avg_logP: {avg_logp:+.2f}, 임계값: {thr}){hint}")
 
 
 # ── Layer 2: CoreAI 가드레일 ──────────────────────────────────
@@ -241,8 +226,6 @@ class CoreAILayer:
     """
     NeuralMarkov 기반 가드레일
     이탈 시 재생성 루프 + XAI 설명
-
-    [변경] logp_thr 강제 전달 제거 → nm 자동 캘리브레이션 사용.
     """
     def __init__(self, nm: NeuralMarkovEngine,
                  xai: Optional[XAILayer] = None):
@@ -251,14 +234,11 @@ class CoreAILayer:
 
     def run(self, question: str, llm_fn,
             max_attempts: int = 3,
+            logp_thr: float = -11.5,
             guideline_hint: str = "") -> GuardrailResult:
         t0 = time.perf_counter()
         history = []
 
-        answer = ""
-        status = "SKIP"
-        avg_logp = 0.0
-        attempt = 1
         for attempt in range(1, max_attempts+1):
             # LLM 호출
             if attempt == 1:
@@ -276,9 +256,9 @@ class CoreAILayer:
                 answer = f"[LLM 오류: {e}]"
                 break
 
-            # 가드레일 평가 (자동 임계값)
+            # 가드레일 평가
             if self.nm and self.nm.is_trained:
-                result = self.nm.evaluate(answer)
+                result = self.nm.evaluate(answer, logp_thr=logp_thr)
                 status  = result.get("status","FATAL")
                 avg_logp = result.get("avg_logp",0.0)
             else:
@@ -297,7 +277,7 @@ class CoreAILayer:
         # XAI 설명
         xai_result = None
         if self.xai:
-            xai_result = self.xai.explain(answer)
+            xai_result = self.xai.explain(answer, logp_thr=logp_thr)
 
         total_ms = (time.perf_counter()-t0)*1000
         return GuardrailResult(
@@ -422,8 +402,8 @@ class GasCoreFramework:
 
     # ── Layer 2: CoreAI 가드레일 실행 ────────────────────────
     def run_guardrail(self, question: str, llm_fn,
-                      max_attempts: int = 3) -> GuardrailResult:
-        """[변경] logp_thr 인자 제거 → nm 자동 캘리브레이션 사용."""
+                      max_attempts: int = 3,
+                      logp_thr: float = -11.5) -> GuardrailResult:
         if not self.coreai:
             # 가드레일 없이 LLM만
             try:
@@ -438,16 +418,17 @@ class GasCoreFramework:
             question=question,
             llm_fn=llm_fn,
             max_attempts=max_attempts,
+            logp_thr=logp_thr,
             guideline_hint=self.guideline_hint,
         )
 
     # ── Layer 3: XAI 독립 실행 ───────────────────────────────
-    def explain(self, text: str) -> Optional[XAIResult]:
+    def explain(self, text: str,
+                logp_thr: float = -11.5) -> Optional[XAIResult]:
         """
         가드레일 판정:
           v2 클러스터 NM (우선) + v1 단일 NM (보조)
           둘 다 있으면 더 엄격한 판정 사용
-        [변경] logp_thr 인자 제거 → 자동 임계값.
         """
         # v2 클러스터 NM
         v2_result = None
@@ -457,7 +438,7 @@ class GasCoreFramework:
         # v1 단일 NM
         v1_result = None
         if self.xai_layer:
-            v1_result = self.xai_layer.explain(text)
+            v1_result = self.xai_layer.explain(text, logp_thr)
 
         # 결합: v2 있으면 우선 사용
         if v2_result and v1_result:
@@ -476,6 +457,7 @@ class GasCoreFramework:
             return v1_result
         elif v2_result and not v1_result:
             # v2만 있으면 XAIResult 생성
+            from dataclasses import dataclass
             st = v2_result.get("verdict","SKIP")
             return XAIResult(
                 verdict=st,
@@ -513,7 +495,7 @@ class GasCoreFramework:
         if self.nm and combined.strip():
             self.nm.train(combined, embedding_dim=32, epochs=epochs)
 
-        # 캘리브레이션 — 원본 코퍼스 기준으로 mu/std 재산출
+        # 캘리브레이션
         if self.nm and self.corpus_text:
             self.nm._calibrate(self.corpus_text)
 
@@ -607,20 +589,13 @@ class GasCoreFramework:
             fw.nm.mu    = nm.get("mu",  0.0)
             fw.nm.std   = nm.get("std", 1.0)
             fw.nm.is_trained = True
-            # [변경] 구버전 pkl은 std=2.0 하한이 박혀 있으므로
-            # 코퍼스가 있으면 무조건 재캘리브레이션하여 실제 분포 std 복원.
-            if fw.corpus_text:
+            if fw.nm.mu == 0.0 and fw.corpus_text:
                 fw.nm._calibrate(fw.corpus_text)
 
         # CoreAI v2 복원
         if "coreai_v2" in data and V2_OK:
             try:
                 fw.coreai_v2 = CoreAIv2Engine.load_from_dict(data["coreai_v2"])
-                # v2 내부 nm_engine 도 캘리브레이션 필요 시 재산출
-                if (fw.coreai_v2 and fw.coreai_v2.nm_engine
-                        and fw.coreai_v2.nm_engine.is_trained
-                        and fw.corpus_text):
-                    fw.coreai_v2.nm_engine._calibrate(fw.corpus_text)
             except Exception:
                 fw.coreai_v2 = None
 
@@ -639,8 +614,6 @@ class GasCoreFramework:
             "cycle":         self.cycle,
             "nm_vocab":      len(self.nm.uni) if self.nm else 0,
             "nm_trained":    self.nm.is_trained if self.nm else False,
-            "nm_pass_thr":   round(self.nm.pass_thr, 3) if self.nm and self.nm.is_trained else None,
-            "nm_fatal_thr":  round(self.nm.fatal_thr, 3) if self.nm and self.nm.is_trained else None,
             **{f"ev_{k}":v for k,v in ev_sum.items()},
         }
 
