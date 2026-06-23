@@ -602,7 +602,7 @@ with tab1:
                         if fw2.evolving:
                             fw2.evolving.sentences.append(new_sent)
                         set_fw(fw2)
-                        st.success("✅ 학습됨!")
+                        st.toast("✅ 학습됐어요!", icon="🌱")
             with col_xai:
                 if r.xai and r.xai.outlier_tokens:
                     st.markdown(
