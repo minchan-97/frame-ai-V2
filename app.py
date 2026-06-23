@@ -342,6 +342,55 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
+        # ── 문서 추가 학습 ──────────────────────────────
+        st.markdown("---")
+        st.markdown("### ➕ 문서 추가 학습")
+        st.caption("기존 학습에 새 문서를 추가해요")
+
+        add_up = st.file_uploader(
+            "추가할 문서",
+            type=["txt","pdf","docx"],
+            key="add_corpus",
+            label_visibility="collapsed"
+        )
+        if add_up:
+            if st.button("➕ 추가 학습 시작", use_container_width=True):
+                with st.spinner("새 문서를 추가 학습 중이에요..."):
+                    try:
+                        raw2  = add_up.read()
+                        name2 = add_up.name.lower()
+                        if name2.endswith(".pdf"):
+                            import pypdf
+                            new_text = "\n".join(
+                                p.extract_text() or ""
+                                for p in pypdf.PdfReader(io.BytesIO(raw2)).pages)
+                        elif name2.endswith(".docx"):
+                            import docx as _docx
+                            new_text = "\n".join(
+                                p.text for p in _docx.Document(io.BytesIO(raw2)).paragraphs
+                                if p.text.strip())
+                        else:
+                            new_text = raw2.decode("utf-8", errors="ignore")
+
+                        fw2 = get_fw()
+                        # 기존 corpus에 추가
+                        fw2.corpus_text     = getattr(fw2,"corpus_text","") + "\n" + new_text
+                        fw2.guideline_hint  = fw2.corpus_text[:1000]
+                        # NM 증분 학습
+                        if fw2.nm and fw2.nm.is_trained:
+                            fw2.nm.train(new_text, embedding_dim=32, epochs=5)
+                        # evolving 재초기화
+                        if fw2.evolving:
+                            fw2.evolving.initialize(
+                                fw2.corpus_text, epochs=5)
+                        fw2.cycle += 1
+                        set_fw(fw2)
+                        st.success(f"✅ '{add_up.name}' 추가 학습 완료!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"추가 학습 실패: {e}")
+                        import traceback; st.code(traceback.format_exc())
+
         # 대화 기록 간략화 (질문 + 판정 + 답변 앞 200자)
         qa_slim = [
             {
